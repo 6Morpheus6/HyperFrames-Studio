@@ -361,6 +361,131 @@ def generate_html_with_ai(prompt, provider, url, model, current_html):
     except Exception as e:
         return current_html, f"❌ Failed to connect to {provider} at {base_url}: {str(e)}"
 
+def generate_html_with_cloud_ai(prompt, cloud_model, api_key, current_html):
+    import requests
+    import json
+    
+    if not prompt:
+        return current_html, "⚠️ Please enter an AI prompt."
+        
+    # Default Gemini Key
+    gemini_default_key = "AIzaSyAbypoKNZASkaHp6ul5bxP-cFWoquJep3w"
+    
+    # Identify provider and model properties
+    if "Gemini" in cloud_model:
+        provider = "Gemini"
+        actual_key = api_key.strip() if api_key.strip() else gemini_default_key
+        if "3.1 Flash" in cloud_model:
+            model_id = "gemini-3.1-flash"
+        elif "3.1 Pro" in cloud_model:
+            model_id = "gemini-3.1-pro"
+        elif "2.0 Flash" in cloud_model:
+            model_id = "gemini-2.0-flash-exp"
+        elif "1.5 Pro" in cloud_model:
+            model_id = "gemini-1.5-pro"
+        else:
+            model_id = "gemini-1.5-flash"
+        
+        url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {actual_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": model_id,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": f"Here is the current HTML:\n```html\n{current_html}\n```\n\nUser request: {prompt}"}
+            ],
+            "temperature": 0.2
+        }
+    elif "GPT" in cloud_model:
+        provider = "OpenAI"
+        actual_key = api_key.strip()
+        if not actual_key:
+            return current_html, "⚠️ OpenAI API key is required for GPT models."
+        
+        if "GPT-4o-mini" in cloud_model:
+            model_id = "gpt-4o-mini"
+        else:
+            model_id = "gpt-4o"
+            
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {actual_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": model_id,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": f"Here is the current HTML:\n```html\n{current_html}\n```\n\nUser request: {prompt}"}
+            ],
+            "temperature": 0.2
+        }
+    elif "Claude" in cloud_model:
+        provider = "Anthropic"
+        actual_key = api_key.strip()
+        if not actual_key:
+            return current_html, "⚠️ Anthropic API key is required for Claude models."
+            
+        if "3.7 Sonnet" in cloud_model:
+            model_id = "claude-3-7-sonnet-20250219"
+        elif "3.5 Sonnet" in cloud_model:
+            model_id = "claude-3-5-sonnet-20241022"
+        elif "Opus" in cloud_model:
+            model_id = "claude-3-opus-20240229"
+        else:
+            model_id = "claude-3-5-haiku-20241022"
+            
+        url = "https://api.anthropic.com/v1/messages"
+        headers = {
+            "x-api-key": actual_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json"
+        }
+        payload = {
+            "model": model_id,
+            "max_tokens": 8192,
+            "system": SYSTEM_PROMPT,
+            "messages": [
+                {"role": "user", "content": f"Here is the current HTML:\n```html\n{current_html}\n```\n\nUser request: {prompt}"}
+            ],
+            "temperature": 0.2
+        }
+    else:
+        return current_html, "⚠️ Unknown cloud provider."
+
+    try:
+        if provider == "Anthropic":
+            response = requests.post(url, headers=headers, json=payload, timeout=60)
+            if response.status_code == 200:
+                data = response.json()
+                ai_code = data["content"][0]["text"].strip()
+            else:
+                return current_html, f"❌ Anthropic API Error (HTTP {response.status_code}): {response.text}"
+        else:
+            response = requests.post(url, headers=headers, json=payload, timeout=60)
+            if response.status_code == 200:
+                data = response.json()
+                ai_code = data["choices"][0]["message"]["content"].strip()
+            else:
+                return current_html, f"❌ {provider} API Error (HTTP {response.status_code}): {response.text}"
+                
+        # Clean up markdown block wraps if any
+        if ai_code.startswith("```html"):
+            ai_code = ai_code[7:]
+        elif ai_code.startswith("```"):
+            ai_code = ai_code[3:]
+        if ai_code.endswith("```"):
+            ai_code = ai_code[:-3]
+            
+        ai_code = ai_code.strip()
+        return ai_code, f"🎉 HTML code successfully generated using {cloud_model} and updated in editor."
+        
+    except Exception as e:
+        return current_html, f"❌ Failed to connect to {provider}: {str(e)}"
+
 def get_torch_info():
     try:
         device = devicetorch.get(torch)
@@ -439,7 +564,7 @@ def render_video(html_code, duration, width, height, video_file=None, audio_file
             
     # If audio is present, run transcription BEFORE rendering
     if audio_file:
-        transcribe_cmd = ["npx", "hyperframes", "transcribe", "input_audio.wav", "--dir", "."]
+        transcribe_cmd = ["npx", "-y", "hyperframes", "transcribe", "input_audio.wav", "--dir", "."]
         logs += f"Starting transcription command: {' '.join(transcribe_cmd)}\n\n"
         yield logs, None
         
@@ -475,7 +600,7 @@ def render_video(html_code, duration, width, height, video_file=None, audio_file
 
     # Command to run npx hyperframes render
     # We specify --output output.mp4
-    cmd = ["npx", "hyperframes", "render", "--output", output_filename]
+    cmd = ["npx", "-y", "hyperframes", "render", "--output", output_filename]
     
     logs += f"Starting rendering command: {' '.join(cmd)}\n\n"
     yield logs, None
@@ -511,7 +636,17 @@ def render_video(html_code, duration, width, height, video_file=None, audio_file
         yield logs, None
 
 # Gradio Interface
-with gr.Blocks(title="HyperFrames Studio", css="body { background-color: #0f172a; }") as demo:
+with gr.Blocks(title="HyperFrames Studio", css="""
+    body { background-color: #0f172a; }
+    #terminal-box textarea {
+        background-color: #020617 !important;
+        color: #38bdf8 !important;
+        font-family: 'Courier New', Courier, monospace !important;
+        border: 1px solid #1e293b !important;
+        border-radius: 8px !important;
+        padding: 12px !important;
+    }
+""") as demo:
     gr.Markdown(
         """
         # 🎬 HyperFrames Studio (Gradio Wrapper)
@@ -528,32 +663,66 @@ with gr.Blocks(title="HyperFrames Studio", css="body { background-color: #0f172a
                 label="Select Starting Template"
             )
             
-            # HTML Code Area
-            with gr.Accordion("🔮 Local AI Code Assistant (Ollama / LM Studio)", open=False):
+            # HTML Code Area - Local AI Code Assistant
+            with gr.Accordion("🔮 Local AI Code Assistant (Ollama, LM Studio, Jan.ai, LLaMA.cpp, KoboldCPP)", open=False):
                 with gr.Row():
                     llm_provider = gr.Radio(
-                        choices=["None", "Ollama", "LM Studio"],
+                        choices=["None", "Ollama", "LM Studio", "Llama.cpp", "Jan.ai", "KoboldCPP"],
                         value="None",
-                        label="AI Provider"
+                        label="Local Provider"
                     )
                 with gr.Row():
                     llm_url = gr.Textbox(
                         label="API Base URL",
                         value="http://localhost:11434/v1",
-                        placeholder="e.g. http://localhost:11434/v1 or http://localhost:1234/v1"
+                        placeholder="e.g. http://localhost:11434/v1"
                     )
                     llm_model = gr.Textbox(
                         label="Model Name",
                         value="qwen2.5-coder",
-                        placeholder="e.g. qwen2.5-coder, llama3"
+                        placeholder="e.g. qwen2.5-coder"
                     )
                 ai_prompt = gr.Textbox(
-                    label="What would you like the AI to build or edit?",
+                    label="What would you like the Local AI to build or edit?",
                     placeholder="e.g. 'Add a fade-in text overlay in the center' or 'Create a 10-second slideshow from scratch'",
                     lines=3
                 )
-                ai_generate_btn = gr.Button("🔮 Generate / Update HTML Code", variant="secondary")
-                ai_status = gr.Markdown(value="*Select Ollama or LM Studio, specify model details, write a prompt, and click generate.*")
+                ai_generate_btn = gr.Button("🔮 Generate / Update HTML Code (Local)", variant="secondary")
+                ai_status = gr.Markdown(value="*Select a local provider, specify model details, write a prompt, and click generate.*")
+
+            # HTML Code Area - Closed Source AI Code Assistant
+            with gr.Accordion("🌐 Closed Source AI Code Assistant (Gemini, OpenAI, Claude)", open=False):
+                with gr.Row():
+                    cloud_provider = gr.Dropdown(
+                        choices=[
+                            "Gemini 3.1 Flash (Free API Key)",
+                            "Gemini 3.1 Pro (Free API Key)",
+                            "Gemini 2.0 Flash (Free API Key)",
+                            "Gemini 1.5 Pro (Free API Key)",
+                            "Gemini 1.5 Flash (Free API Key)",
+                            "GPT-4o (Requires OpenAI Key)",
+                            "GPT-4o-mini (Requires OpenAI Key)",
+                            "Claude 3.7 Sonnet (Requires Anthropic Key)",
+                            "Claude 3.5 Sonnet (Requires Anthropic Key)",
+                            "Claude 3.5 Haiku (Requires Anthropic Key)",
+                            "Claude 3 Opus (Requires Anthropic Key)"
+                        ],
+                        value="Gemini 3.1 Flash (Free API Key)",
+                        label="Cloud Model"
+                    )
+                with gr.Row():
+                    cloud_api_key = gr.Textbox(
+                        label="API Key (Leave blank to use pre-configured Gemini Key)",
+                        placeholder="Enter your API Key here",
+                        type="password"
+                    )
+                cloud_prompt = gr.Textbox(
+                    label="What would you like the Cloud AI to build or edit?",
+                    placeholder="e.g. 'Add a fade-in text overlay in the center' or 'Create a 10-second slideshow from scratch'",
+                    lines=3
+                )
+                cloud_generate_btn = gr.Button("🌐 Generate / Update HTML Code (Cloud)", variant="secondary")
+                cloud_status = gr.Markdown(value="*Select cloud model, enter API key if required, write a prompt, and click generate.*")
 
             html_editor = gr.Code(
                 value=TEMPLATES["Minimal Intro"],
@@ -586,7 +755,8 @@ with gr.Blocks(title="HyperFrames Studio", css="body { background-color: #0f172a
                 label="Console Output / Build Logs",
                 lines=15,
                 max_lines=30,
-                interactive=False
+                interactive=False,
+                elem_id="terminal-box"
             )
             
     # Event listeners
@@ -595,6 +765,12 @@ with gr.Blocks(title="HyperFrames Studio", css="body { background-color: #0f172a
             return "http://localhost:11434/v1", "qwen2.5-coder"
         elif provider == "LM Studio":
             return "http://localhost:1234/v1", "qwen2.5-coder"
+        elif provider == "Jan.ai":
+            return "http://localhost:1337/v1", "qwen2.5-coder"
+        elif provider == "Llama.cpp":
+            return "http://localhost:8080/v1", ""
+        elif provider == "KoboldCPP":
+            return "http://localhost:5001/v1", ""
         else:
             return "http://localhost:11434/v1", ""
             
@@ -608,6 +784,12 @@ with gr.Blocks(title="HyperFrames Studio", css="body { background-color: #0f172a
         fn=generate_html_with_ai,
         inputs=[ai_prompt, llm_provider, llm_url, llm_model, html_editor],
         outputs=[html_editor, ai_status]
+    )
+
+    cloud_generate_btn.click(
+        fn=generate_html_with_cloud_ai,
+        inputs=[cloud_prompt, cloud_provider, cloud_api_key, html_editor],
+        outputs=[html_editor, cloud_status]
     )
 
     def load_template(name):
